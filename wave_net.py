@@ -27,7 +27,7 @@ class WaveNet(nn.Module):
         context_size=0):
         """ Init CNN Model.
 
-        @param layer_nums (int): Number of layers
+        @param layers (int): Number of layers
         @param context_size (int): Size of conditional context
         """
         super(WaveNet, self).__init__()
@@ -127,7 +127,7 @@ class WaveNet(nn.Module):
             voices.append(voice)
         return voices
 
-    def generate_voices(self, context: np.array) -> List[List[int]]:
+    def generate(self, context: np.array) -> List[List[int]]:
         """ generate voice with context.
 
          @param context (np.array): a np.array with shape (B, N, H)
@@ -142,8 +142,8 @@ class WaveNet(nn.Module):
         context_tensor = torch.tensor(
             context, dtype=torch.float, device=self.device)
         receptive_fields = []
-        for layer_index in range(self.layer_nums):
-            layer = self.layers[layer_index]
+        for layer_index in range(self.layers):
+            layer = self.layer_nets[layer_index]
             receptive_fields_channel = self.layer_channels
             if layer_index == 0:
                 receptive_fields_channel = 1
@@ -156,17 +156,18 @@ class WaveNet(nn.Module):
 
         for sample_index in range(sample_num):
             layer_output_aggregate = torch.zeros(
-                batch_size, receptive_fields_channel, 1, device=self.device)
+                batch_size, self.skip_channels, 1, device=self.device)
             ctx = context_tensor[:, sample_index:sample_index+1, :]
-            for layer_index in range(self.layer_nums):
+            for layer_index in range(self.layers):
                 layer_input = receptive_fields[layer_index]
-                layer = self.layers[layer_index]
+                layer = self.layer_nets[layer_index]
                 if layer_index == 0:
                     layer_output = layer(layer_input, padding=False)
                 else:
                     layer_output = layer(layer_input, ctx, padding=False)
-                    layer_output_aggregate = layer_output_aggregate + layer_output
-                if layer_index < self.layer_nums-1:
+                    layer_skip_output = self.skip_connections[layer_index-1](layer_output)
+                    layer_output_aggregate = layer_output_aggregate + layer_skip_output
+                if layer_index < self.layers-1:
                     receptive_fields[layer_index+1] = torch.cat(
                         [receptive_fields[layer_index+1][:, :, 1:], layer_output], dim=2)
             aggregate = self.aggregate1x1(F.relu(layer_output_aggregate))
