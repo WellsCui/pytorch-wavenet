@@ -16,7 +16,15 @@ class WaveNet(nn.Module):
         - 1D CNN
     """
 
-    def __init__(self, layer_nums, kernel_size=2, layer_channels=16, target_size=256, context_size=0):
+    def __init__(self, 
+        layers=20, 
+        block_size=10,
+        kernel_size=2,
+        layer_channels=16, 
+        skip_channels=32,
+        aggregate_channels=64,
+        classes=256,
+        context_size=0):
         """ Init CNN Model.
 
         @param layer_nums (int): Number of layers
@@ -24,27 +32,32 @@ class WaveNet(nn.Module):
         """
         super(WaveNet, self).__init__()
 
-        self.layer_nums = layer_nums
-        self.layer_channels = layer_channels
-        self.context_size = context_size
+        self.layers = layers
+        self.block_size = block_size
         self.kernel_size = kernel_size
+        self.layer_channels = layer_channels
+        self.skip_channels = skip_channels
+        self.context_size = context_size
+        self.aggregate_channels = aggregate_channels
+        self.classes = classes
+        self.layer_nets = []
+        self.skip_connections = []
+        
+        self.classes = classes
 
-        self.layers = []
-        self.agregate_size = 64
-        self.output_size = target_size
+        self.aggregate1x1 = nn.Conv1d(
+            self.skip_channels, self.aggregate_channels, 1)
+        self.output1x1 = nn.Conv1d(self.aggregate_channels, self.classes, 1)
 
-        self.agregate1x1 = nn.Conv1d(
-            self.layer_channels, self.agregate_size, 1)
-        self.output1x1 = nn.Conv1d(self.agregate_size, self.output_size, 1)
-        for layer_index in range(self.layer_nums):
-            # print("building layer:", layer_index)
-            dilation = 2 ** (layer_index % 10)
+        for layer_index in range(self.layers):
+            dilation = 2 ** (layer_index % self.block_size)
             if layer_index == 0:
-                self.layers.append(CausalConv1d(
+                self.layer_nets.append(CausalConv1d(
                     1, self.layer_channels, self.kernel_size))
             else:
-                self.layers.append(WaveNetLayer(
+                self.layer_nets.append(WaveNetLayer(
                     self.layer_channels, self.layer_channels, self.kernel_size, dilation, context_size=self.context_size))
+                self.skip_connections.append(nn.Conv1d(self.layer_channels, self.skip_channels, 1))
 
     def forward(self, input: List[List[int]], context: Optional[np.array]) -> (torch.Tensor, List[int]):
         """ Take a tensor with shape (B, N)
@@ -67,17 +80,18 @@ class WaveNet(nn.Module):
         return self.masks(layer_output, lengths), lengths
 
     def layers_forward(self, layer_input: torch.Tensor, context: torch.Tensor, padding=True) -> torch.Tensor:
-        layer_output_aggregate = None
-        for layer_index in range(self.layer_nums):
+        layer_aggregate_input = torch.zeros(
+                layer_input.size(0), self.skip_channels, layer_input.size(2), device=self.device)
+        for layer_index in range(self.layers):
             if layer_index == 0:
-                layer_output = self.layers[layer_index](layer_input, padding)
-                layer_output_aggregate = layer_output
+                layer_output = self.layer_nets[layer_index](layer_input, padding)                
             else:
-                layer_output = self.layers[layer_index](
+                layer_output = self.layer_nets[layer_index](
                     layer_input, context, padding)
-                layer_output_aggregate = layer_output_aggregate + layer_output
+                layer_skip_output = self.skip_connections[layer_index-1](layer_input)
+                layer_aggregate_input = layer_aggregate_input + layer_skip_output
             layer_input = layer_input + layer_output
-        aggregate = self.agregate1x1(F.relu(layer_output_aggregate))
+        aggregate = self.aggregate1x1(F.relu(layer_aggregate_input))
         output = self.output1x1(F.relu(aggregate))
         return F.log_softmax(output, 1)
 
@@ -151,11 +165,11 @@ class WaveNet(nn.Module):
                     layer_output = layer(layer_input, padding=False)
                 else:
                     layer_output = layer(layer_input, ctx, padding=False)
-                layer_output_aggregate = layer_output_aggregate + layer_output
+                    layer_output_aggregate = layer_output_aggregate + layer_output
                 if layer_index < self.layer_nums-1:
                     receptive_fields[layer_index+1] = torch.cat(
                         [receptive_fields[layer_index+1][:, :, 1:], layer_output], dim=2)
-            aggregate = self.agregate1x1(F.relu(layer_output_aggregate))
+            aggregate = self.aggregate1x1(F.relu(layer_output_aggregate))
             output = self.output1x1(F.relu(aggregate))
             output = F.log_softmax(output, 1)
             sample = self.reconstruct_from_output(output, [1]*batch_size)
@@ -169,8 +183,8 @@ class WaveNet(nn.Module):
     def to(self, device: Optional[Union[int, torch.device]] = ..., dtype: Optional[Union[torch.dtype, str]] = ...,
            non_blocking: bool = ...):
         self.device = device
-        self.agregate1x1.to(self.device)
-        self.output1x1.to(self.device)
-        for layer_index in range(self.layer_nums):
-            self.layers[layer_index].to(self.device)
-        return self
+        for layer in self.layer_nets:
+            layer.to(self.device)
+        for skip_connection in self.skip_connections:
+            skip_connection.to(self.device)
+        return super(WaveNet, self).to(self.device)
