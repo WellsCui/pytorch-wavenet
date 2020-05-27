@@ -1,2 +1,2 @@
 # pytorch-wavenet
-A Pytorch implement  of google WaveNet paper
+A Pytorch implementation of google WaveNet paper
