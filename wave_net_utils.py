@@ -2,8 +2,10 @@
 import numpy as np
 import scipy.io.wavfile as wavfile
 import scipy.signal as signal
+import torch
 import torchvision.transforms.functional as TF
 from typing import List, Tuple, Dict, Set, Union
+
 
 def load_voices_files(voice_files):
     voices = []
@@ -43,5 +45,3 @@ def get_voices_labels(voices: List[List[int]], label_count=256):
     step = 2 / label_count
     x = x // step + label_count // 2
     return x.astype(int), lengths
-
-

@@ -9,7 +9,7 @@ from causal_conv1d import CausalConv1d
 from wave_net_layer import WaveNetLayer
 from wave_net_utils import fill_voices_data_with_pads
 from typing import List, Tuple, Dict, Set, Union, Optional
-
+from multiprocessing import Process, Queue
 
 class WaveNet(nn.Module):
     """ Simple CNN Model:
@@ -40,8 +40,8 @@ class WaveNet(nn.Module):
         self.context_size = context_size
         self.aggregate_channels = aggregate_channels
         self.classes = classes
-        self.layer_nets = []
-        self.skip_connections = []
+        self.layer_nets = torch.nn.ModuleList()
+        self.skip_connections = torch.nn.ModuleList()
         
         self.classes = classes
 
@@ -59,27 +59,33 @@ class WaveNet(nn.Module):
                     self.layer_channels, self.layer_channels, self.kernel_size, dilation, context_size=self.context_size))
                 self.skip_connections.append(nn.Conv1d(self.layer_channels, self.skip_channels, 1))
 
-    def forward(self, input: List[List[int]], context: Optional[np.array]) -> (torch.Tensor, List[int]):
+    def forward(self, input: List[List[int]], context: Optional[torch.Tensor]) -> (torch.Tensor, List[int]):
         """ Take a tensor with shape (B, N)
 
         @param input (torch.Tensor): a tensor with shape (B, N)
-        @param context (np.array): a np.array with shape (B, N, H)
+        @param context (torch.Tensor): a tensor with shape (B, N, H)
         N: number of samples
         B: batch size
         H: context size
 
         @returns output (torch.Tensor): a variable/tensor of shape (B, N, output_size)
         """
+        layer_input, lengths = self.build_layer_input(input)
+        output, _ = self.layers_forward(layer_input, context)
+        masked_output = self.masks(output, lengths)
+        return F.log_softmax(masked_output, 1), lengths
+
+    def build_layer_input(self, input: List[List[int]]) -> (torch.Tensor, List[int]):
+        batch_size = len(input)
         padded_input, lengths = fill_voices_data_with_pads(input)
         input_tensor = torch.tensor(
             padded_input, dtype=torch.float, device=self.device)/(65536/2)
-        if context is not None:
-            context = torch.from_numpy(context).to(device=self.device)
-        layer_input = input_tensor.unsqueeze(1)
-        layer_output = self.layers_forward(layer_input, context)
-        return self.masks(layer_output, lengths), lengths
+        input_tensor = torch.cat((torch.zeros(batch_size, 1).to(self.device), input_tensor[:, :-1]), dim=1)
+        return input_tensor.unsqueeze(1), lengths
+
 
     def layers_forward(self, layer_input: torch.Tensor, context: torch.Tensor, padding=True) -> torch.Tensor:
+        layer_outputs = []
         layer_aggregate_input = torch.zeros(
                 layer_input.size(0), self.skip_channels, layer_input.size(2), device=self.device)
         for layer_index in range(self.layers):
@@ -91,9 +97,10 @@ class WaveNet(nn.Module):
                 layer_skip_output = self.skip_connections[layer_index-1](layer_input)
                 layer_aggregate_input = layer_aggregate_input + layer_skip_output
             layer_input = layer_input + layer_output
+            layer_outputs.append(layer_output)
         aggregate = self.aggregate1x1(F.relu(layer_aggregate_input))
         output = self.output1x1(F.relu(aggregate))
-        return F.log_softmax(output, 1)
+        return output, layer_outputs
 
     def masks(self, output: torch.Tensor, source_lengths: List[int]) -> torch.Tensor:
         """ return masked oupt.
@@ -127,7 +134,7 @@ class WaveNet(nn.Module):
             voices.append(voice)
         return voices
 
-    def generate(self, context: np.array) -> List[List[int]]:
+    def generate(self, leading_samples: List[List[int]], context: torch.Tensor, sample_queue: Queue) -> List[List[int]]:
         """ generate voice with context.
 
          @param context (np.array): a np.array with shape (B, N, H)
@@ -136,28 +143,28 @@ class WaveNet(nn.Module):
                                     H: context size
 
         """
+        if leading_samples is not None:
+            layer_input, lengths = self.build_layer_input(leading_samples)
+            _, layer_outputs = self.layers_forward(layer_input, context)
+            context = context[:, lengths[0]:, :]
         sample_num = context.shape[1]
         batch_size = context.shape[0]
         samples = []
-        context_tensor = torch.tensor(
-            context, dtype=torch.float, device=self.device)
         receptive_fields = []
         for layer_index in range(self.layers):
             layer = self.layer_nets[layer_index]
-            receptive_fields_channel = self.layer_channels
             if layer_index == 0:
-                receptive_fields_channel = 1
                 receptive_fields_size = 2
+                receptive_fields.append(layer_input[:, :, -2:])
             else:
                 receptive_fields_size = layer.dilation * \
                     (self.kernel_size-1) + 1
-            receptive_fields.append(torch.zeros(
-                batch_size, receptive_fields_channel, receptive_fields_size, device=self.device))
+                receptive_fields.append(layer_outputs[layer_index-1][:, : ,-receptive_fields_size:])
 
         for sample_index in range(sample_num):
             layer_output_aggregate = torch.zeros(
                 batch_size, self.skip_channels, 1, device=self.device)
-            ctx = context_tensor[:, sample_index:sample_index+1, :]
+            ctx = context[:, sample_index:sample_index+1, :]
             for layer_index in range(self.layers):
                 layer_input = receptive_fields[layer_index]
                 layer = self.layer_nets[layer_index]
@@ -168,6 +175,7 @@ class WaveNet(nn.Module):
                     layer_skip_output = self.skip_connections[layer_index-1](layer_output)
                     layer_output_aggregate = layer_output_aggregate + layer_skip_output
                 if layer_index < self.layers-1:
+                    layer_output = layer_output + layer_input[:, :, -1:]
                     receptive_fields[layer_index+1] = torch.cat(
                         [receptive_fields[layer_index+1][:, :, 1:], layer_output], dim=2)
             aggregate = self.aggregate1x1(F.relu(layer_output_aggregate))
@@ -177,15 +185,13 @@ class WaveNet(nn.Module):
             samples_tensor = torch.stack(sample)
             receptive_fields[0] = torch.cat(
                 [receptive_fields[0][:, :, 1:], samples_tensor.unsqueeze(1)/(65536/2)], dim=2)
-            samples.append(samples_tensor)
-        voices = torch.cat(samples, dim=1)
-        return voices.cpu().detach().numpy()
+            sample_queue.put(samples_tensor.cpu().detach().numpy(), True)
+        sample_queue.put(None, True)
+        print("generation done!")
 
-    def to(self, device: Optional[Union[int, torch.device]] = ..., dtype: Optional[Union[torch.dtype, str]] = ...,
-           non_blocking: bool = ...):
-        self.device = device
-        for layer in self.layer_nets:
-            layer.to(self.device)
-        for skip_connection in self.skip_connections:
-            skip_connection.to(self.device)
-        return super(WaveNet, self).to(self.device)
+
+    @property
+    def device(self) -> torch.device:
+        """ Determine which device to place the Tensors upon, CPU or GPU.
+        """
+        return self.output1x1.weight.device
