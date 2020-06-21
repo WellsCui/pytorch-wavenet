@@ -127,7 +127,7 @@ def load_train_data(voice_path: str, data_size: int, epoch_size: int, data_queue
             epoch_count = epoch_count + clip_count
             data_count = data_count + clip_count
             if epoch_count >= epoch_size:
-                print("push new train data ...")
+                # print("push new train data ...")
                 # train_data = list(zip(voices, corpus))
                 # labels = get_voices_labels(voices)
                 data_queue.put(voices, True)
@@ -155,7 +155,7 @@ def batch_iter_to_queue(data_queue, batch_queue, loss_queue, epoch_num, batch_si
         print("start new training %d: data(size = %s) in %d epoches : ..." %
               (train_index, len(data), epoch_num))
         for epoch in range(epoch_num):
-            print("epoch:", epoch, "started")
+            # print("epoch:", epoch, "started")
             batch_num = math.ceil(len(data) / batch_size)
             index_array = list(range(len(data)))
 
@@ -171,11 +171,11 @@ def batch_iter_to_queue(data_queue, batch_queue, loss_queue, epoch_num, batch_si
             if loss_sum/batch_num < 0.01:
                 break
 
-        print("geting train data ...")
+        # print("geting train data ...")
         data = data_queue.get(True)
-        if data is not None:
-            print("recieved train data (size = %d) ..." % len(data))
-        else:
-            print("recieved no train data")
+        # if data is not None:
+        #     print("recieved train data (size = %d) ..." % len(data))
+        # else:
+        #     print("recieved no train data")
 
     batch_queue.put((None, None), True)

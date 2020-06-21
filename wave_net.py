@@ -137,8 +137,9 @@ class WaveNet(nn.Module):
         for e_id in range(source.size(0)):
             # voice = source[e_id, :, :src_len].cpu().detach().numpy()
             voice_softmax = source[e_id, :, :]
-            Y = (torch.argmax(voice_softmax, axis=0)-128) / 128
-            voice = torch.sign(Y)*(1/65536)*((1+65536)**torch.abs(Y)-1)
+            Y = torch.argmax(voice_softmax, axis=0)-128
+            Y = Y.float() / 128
+            voice = torch.sign(Y)*(1/256)*((1+256)**torch.abs(Y)-1)
             voices.append(voice)
         return voices
 
@@ -152,10 +153,10 @@ class WaveNet(nn.Module):
 
         """
         if leading_samples is not None:
-            input_tensor, lengths = self.build_input_tensor(leading_samples)
-            layer_input = self.embedding(input_tensor)
-            _, layer_outputs = self.layers_forward(layer_input, context)
-            context = context[:, lengths[0]:, :]
+            input_tensor = torch.tensor(leading_samples, dtype=torch.float, device=self.device)
+            layer_inputs = self.embedding(input_tensor.unsqueeze(1))
+            _, layer_outputs = self.layers_forward(layer_inputs, context)
+            context = context[:, :, :]
         sample_num = context.shape[1]
         batch_size = context.shape[0]
         samples = []
@@ -163,8 +164,8 @@ class WaveNet(nn.Module):
         for layer_index in range(self.layers):
             layer = self.layer_nets[layer_index]
             if layer_index == 0:
-                receptive_fields_size = 2
-                receptive_fields.append(layer_input[:, :, -2:])
+                receptive_fields_size = self.kernel_size
+                receptive_fields.append(layer_inputs[:, :, -self.kernel_size:])
             else:
                 receptive_fields_size = layer.dilation * \
                     (self.kernel_size-1) + 1
@@ -190,10 +191,11 @@ class WaveNet(nn.Module):
             aggregate = self.aggregate1x1(F.relu(layer_output_aggregate))
             output = self.output1x1(F.relu(aggregate))
             output = F.log_softmax(output, 1)
-            sample = self.reconstruct_from_output(output, [1]*batch_size)
+            sample = self.reconstruct_from_output(output)
             samples_tensor = torch.stack(sample)
+            new_inpout = self.embedding(samples_tensor.unsqueeze(1))
             receptive_fields[0] = torch.cat(
-                [receptive_fields[0][:, :, 1:], samples_tensor.unsqueeze(1)/(65536/2)], dim=2)
+                [receptive_fields[0][:, :, 1:], new_inpout], dim=2)
             sample_queue.put(samples_tensor.cpu().detach().numpy(), True)
         sample_queue.put(None, True)
         print("generation done!")
