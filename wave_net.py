@@ -24,7 +24,12 @@ class WaveNet(nn.Module):
         skip_channels=32,
         aggregate_channels=64,
         classes=256,
-        context_size=0):
+        conditional_features={
+            "enabled": False,
+            "channels": 0,
+            "upsamp_window": 0,
+            "upsamp_stride": 0,
+        }):
         """ Init CNN Model.
 
         @param layers (int): Number of layers
@@ -37,7 +42,7 @@ class WaveNet(nn.Module):
         self.kernel_size = kernel_size
         self.layer_channels = layer_channels
         self.skip_channels = skip_channels
-        self.context_size = context_size
+        self.conditional_features = conditional_features
         self.aggregate_channels = aggregate_channels
         self.classes = classes
         self.layer_nets = torch.nn.ModuleList()
@@ -48,21 +53,22 @@ class WaveNet(nn.Module):
         self.aggregate1x1 = nn.Conv1d(
             self.skip_channels, self.aggregate_channels, 1)
         self.output1x1 = nn.Conv1d(self.aggregate_channels, self.classes, 1)
+        self.embedding = nn.Conv1d(1, self.layer_channels, 1)
 
         for layer_index in range(self.layers):
             dilation = 2 ** (layer_index % self.block_size)
             if layer_index == 0:
                 self.layer_nets.append(CausalConv1d(
-                    1, self.layer_channels, self.kernel_size))
+                    self.layer_channels, self.layer_channels, self.kernel_size))
             else:
                 self.layer_nets.append(WaveNetLayer(
-                    self.layer_channels, self.layer_channels, self.kernel_size, dilation, context_size=self.context_size))
+                    self.layer_channels, self.layer_channels, self.kernel_size, dilation, context_size=self.conditional_features["channels"]))
                 self.skip_connections.append(nn.Conv1d(self.layer_channels, self.skip_channels, 1))
 
-    def forward(self, input: List[List[int]], context: Optional[torch.Tensor]) -> (torch.Tensor, List[int]):
+    def forward(self, input: np.array, context: Optional[torch.Tensor]) -> (torch.Tensor, List[int]):
         """ Take a tensor with shape (B, N)
 
-        @param input (torch.Tensor): a tensor with shape (B, N)
+        @param input (np.array): a np.array with shape (B, N)
         @param context (torch.Tensor): a tensor with shape (B, N, H)
         N: number of samples
         B: batch size
@@ -70,17 +76,18 @@ class WaveNet(nn.Module):
 
         @returns output (torch.Tensor): a variable/tensor of shape (B, N, output_size)
         """
-        layer_input, lengths = self.build_layer_input(input)
+        input_tensor = torch.tensor(input, dtype=torch.float, device=self.device)
+        layer_input = self.embedding(input_tensor.unsqueeze(1))
         output, _ = self.layers_forward(layer_input, context)
-        masked_output = self.masks(output, lengths)
-        return F.log_softmax(masked_output, 1), lengths
+        # masked_output = self.masks(output, lengths)
+        return F.log_softmax(output, 1)
 
-    def build_layer_input(self, input: List[List[int]]) -> (torch.Tensor, List[int]):
+    def build_input_tensor(self, input: List[List[int]]) -> (torch.Tensor, List[int]):
         batch_size = len(input)
         padded_input, lengths = fill_voices_data_with_pads(input)
         input_tensor = torch.tensor(
             padded_input, dtype=torch.float, device=self.device)/(65536/2)
-        input_tensor = torch.cat((torch.zeros(batch_size, 1).to(self.device), input_tensor[:, :-1]), dim=1)
+        # input_tensor = torch.cat((torch.zeros(batch_size, 1).to(self.device), input_tensor[:, :-1]), dim=1)
         return input_tensor.unsqueeze(1), lengths
 
 
@@ -115,11 +122,11 @@ class WaveNet(nn.Module):
         masks = torch.zeros(output.size(0), output.size(1),
                             output.size(2), dtype=torch.float)
         for e_id, src_len in enumerate(source_lengths):
-            masks[e_id, :, :src_len] = 1
+            masks[e_id, :, :src_len-1] = 1
         masks = masks.to(self.device)
         return output*masks
 
-    def reconstruct_from_output(self, source: torch.Tensor, source_lengths: List[int]) -> List[List[int]]:
+    def reconstruct_from_output(self, source: torch.Tensor) -> List[List[int]]:
         """ reconstruct voice from forward output.
 
         @param source (torch.Tensor): a torch.Tensor with shape (B, C, N), where B = batch size,
@@ -127,10 +134,11 @@ class WaveNet(nn.Module):
         @param source_lengths (int): A list of lengths of source
         """
         voices = []
-        for e_id, src_len in enumerate(source_lengths):
+        for e_id in range(source.size(0)):
             # voice = source[e_id, :, :src_len].cpu().detach().numpy()
-            voice_softmax = source[e_id, :, :src_len]
-            voice = (torch.argmax(voice_softmax, axis=0)-128) * 256
+            voice_softmax = source[e_id, :, :]
+            Y = (torch.argmax(voice_softmax, axis=0)-128) / 128
+            voice = torch.sign(Y)*(1/65536)*((1+65536)**torch.abs(Y)-1)
             voices.append(voice)
         return voices
 
@@ -144,7 +152,8 @@ class WaveNet(nn.Module):
 
         """
         if leading_samples is not None:
-            layer_input, lengths = self.build_layer_input(leading_samples)
+            input_tensor, lengths = self.build_input_tensor(leading_samples)
+            layer_input = self.embedding(input_tensor)
             _, layer_outputs = self.layers_forward(layer_input, context)
             context = context[:, lengths[0]:, :]
         sample_num = context.shape[1]
