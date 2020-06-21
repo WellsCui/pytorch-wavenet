@@ -82,14 +82,6 @@ class WaveNet(nn.Module):
         # masked_output = self.masks(output, lengths)
         return F.log_softmax(output, 1)
 
-    def build_input_tensor(self, input: List[List[int]]) -> (torch.Tensor, List[int]):
-        batch_size = len(input)
-        padded_input, lengths = fill_voices_data_with_pads(input)
-        input_tensor = torch.tensor(
-            padded_input, dtype=torch.float, device=self.device)/(65536/2)
-        # input_tensor = torch.cat((torch.zeros(batch_size, 1).to(self.device), input_tensor[:, :-1]), dim=1)
-        return input_tensor.unsqueeze(1), lengths
-
 
     def layers_forward(self, layer_input: torch.Tensor, context: torch.Tensor, padding=True) -> torch.Tensor:
         layer_outputs = []
@@ -155,8 +147,8 @@ class WaveNet(nn.Module):
         if leading_samples is not None:
             input_tensor = torch.tensor(leading_samples, dtype=torch.float, device=self.device)
             layer_inputs = self.embedding(input_tensor.unsqueeze(1))
-            _, layer_outputs = self.layers_forward(layer_inputs, context)
-            context = context[:, :, :]
+            outputs, layer_outputs = self.layers_forward(layer_inputs, context)
+            last_output = F.log_softmax(outputs[:,:,-1:], 1)
         sample_num = context.shape[1]
         batch_size = context.shape[0]
         samples = []
@@ -165,7 +157,11 @@ class WaveNet(nn.Module):
             layer = self.layer_nets[layer_index]
             if layer_index == 0:
                 receptive_fields_size = self.kernel_size
-                receptive_fields.append(layer_inputs[:, :, -self.kernel_size:])
+                sample = self.reconstruct_from_output(last_output)
+                samples_tensor = torch.stack(sample)
+                new_inpout = self.embedding(samples_tensor.unsqueeze(1))
+                receptive_field = torch.cat((layer_inputs[:, :, -self.kernel_size+1:], new_inpout), dim=2)
+                receptive_fields.append(receptive_field)
             else:
                 receptive_fields_size = layer.dilation * \
                     (self.kernel_size-1) + 1
