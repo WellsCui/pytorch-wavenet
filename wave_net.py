@@ -57,13 +57,9 @@ class WaveNet(nn.Module):
 
         for layer_index in range(self.layers):
             dilation = 2 ** (layer_index % self.block_size)
-            if layer_index == 0:
-                self.layer_nets.append(CausalConv1d(
-                    self.layer_channels, self.layer_channels, self.kernel_size))
-            else:
-                self.layer_nets.append(WaveNetLayer(
-                    self.layer_channels, self.layer_channels, self.kernel_size, dilation, context_size=self.conditional_features["channels"]))
-                self.skip_connections.append(nn.Conv1d(self.layer_channels, self.skip_channels, 1))
+            self.layer_nets.append(WaveNetLayer(
+                self.layer_channels, self.layer_channels, self.kernel_size, dilation, context_size=self.conditional_features["channels"]))
+            self.skip_connections.append(nn.Conv1d(self.layer_channels, self.skip_channels, 1))
 
     def forward(self, input: np.array, context: Optional[torch.Tensor]) -> (torch.Tensor, List[int]):
         """ Take a tensor with shape (B, N)
@@ -88,35 +84,15 @@ class WaveNet(nn.Module):
         layer_aggregate_input = torch.zeros(
                 layer_input.size(0), self.skip_channels, layer_input.size(2), device=self.device)
         for layer_index in range(self.layers):
-            if layer_index == 0:
-                layer_output = self.layer_nets[layer_index](layer_input, padding)                
-            else:
-                layer_output = self.layer_nets[layer_index](
-                    layer_input, context, padding)
-                layer_skip_output = self.skip_connections[layer_index-1](layer_input)
-                layer_aggregate_input = layer_aggregate_input + layer_skip_output
+            layer_output = self.layer_nets[layer_index](
+                layer_input, context, padding)
+            layer_skip_output = self.skip_connections[layer_index](layer_input)
+            layer_aggregate_input = layer_aggregate_input + layer_skip_output
             layer_input = layer_input + layer_output
             layer_outputs.append(layer_output)
         aggregate = self.aggregate1x1(F.relu(layer_aggregate_input))
         output = self.output1x1(F.relu(aggregate))
         return output, layer_outputs
-
-    def masks(self, output: torch.Tensor, source_lengths: List[int]) -> torch.Tensor:
-        """ return masked oupt.
-
-        @param output (Tensor): encodings of shape (B, H, N), where B = batch size,
-                                     N = max source length, H = output_size.
-        @param source_lengths (List[int]): List of actual lengths for each of the voice in the batch.
-
-        @returns masked_output (Tensor): Tensor of sentence masks of shape (B, H, N),
-                                    where B = batch size, N = max source length, H = output_size.
-        """
-        masks = torch.zeros(output.size(0), output.size(1),
-                            output.size(2), dtype=torch.float)
-        for e_id, src_len in enumerate(source_lengths):
-            masks[e_id, :, :src_len-1] = 1
-        masks = masks.to(self.device)
-        return output*masks
 
     def reconstruct_from_output(self, source: torch.Tensor) -> List[List[int]]:
         """ reconstruct voice from forward output.
@@ -174,12 +150,9 @@ class WaveNet(nn.Module):
             for layer_index in range(self.layers):
                 layer_input = receptive_fields[layer_index]
                 layer = self.layer_nets[layer_index]
-                if layer_index == 0:
-                    layer_output = layer(layer_input, padding=False)
-                else:
-                    layer_output = layer(layer_input, ctx, padding=False)
-                    layer_skip_output = self.skip_connections[layer_index-1](layer_output)
-                    layer_output_aggregate = layer_output_aggregate + layer_skip_output
+                layer_output = layer(layer_input, ctx, padding=False)
+                layer_skip_output = self.skip_connections[layer_index](layer_output)
+                layer_output_aggregate = layer_output_aggregate + layer_skip_output
                 if layer_index < self.layers-1:
                     layer_output = layer_output + layer_input[:, :, -1:]
                     receptive_fields[layer_index+1] = torch.cat(
