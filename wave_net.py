@@ -17,12 +17,13 @@ class WaveNet(nn.Module):
     """
 
     def __init__(self, 
-        layers=20, 
+        layers=30, 
         block_size=10,
-        kernel_size=2,
-        layer_channels=16, 
-        skip_channels=32,
-        aggregate_channels=64,
+        kernel_size=3,
+        residual_channels=512,
+        layer_channels=256, 
+        skip_channels=256,
+        aggregate_channels=256,
         classes=256,
         conditional_features={
             "enabled": False,
@@ -45,7 +46,9 @@ class WaveNet(nn.Module):
         self.conditional_features = conditional_features
         self.aggregate_channels = aggregate_channels
         self.classes = classes
+        self.residual_channels = residual_channels
         self.layer_nets = torch.nn.ModuleList()
+        self.residual_connections = torch.nn.ModuleList()
         self.skip_connections = torch.nn.ModuleList()
         
         self.classes = classes
@@ -53,13 +56,14 @@ class WaveNet(nn.Module):
         self.aggregate1x1 = nn.Conv1d(
             self.skip_channels, self.aggregate_channels, 1)
         self.output1x1 = nn.Conv1d(self.aggregate_channels, self.classes, 1)
-        self.embedding = nn.Conv1d(1, self.layer_channels, 1)
+        self.embedding = nn.Conv1d(1, self.residual_channels, 1)
 
         for layer_index in range(self.layers):
             dilation = 2 ** (layer_index % self.block_size)
             self.layer_nets.append(WaveNetLayer(
-                self.layer_channels, self.layer_channels, self.kernel_size, dilation, context_size=self.conditional_features["channels"]))
+                self.residual_channels, self.layer_channels, self.kernel_size, dilation, context_size=self.conditional_features["channels"]))
             self.skip_connections.append(nn.Conv1d(self.layer_channels, self.skip_channels, 1))
+            self.residual_connections.append(nn.Conv1d(self.layer_channels, self.residual_channels, 1))
 
     def forward(self, input: np.array, context: Optional[torch.Tensor]) -> (torch.Tensor, List[int]):
         """ Take a tensor with shape (B, N)
@@ -86,9 +90,9 @@ class WaveNet(nn.Module):
         for layer_index in range(self.layers):
             layer_output = self.layer_nets[layer_index](
                 layer_input, context, padding)
-            layer_skip_output = self.skip_connections[layer_index](layer_input)
+            layer_skip_output = self.skip_connections[layer_index](layer_output)
             layer_aggregate_input = layer_aggregate_input + layer_skip_output
-            layer_input = layer_input + layer_output
+            layer_input = layer_input + self.residual_connections[layer_index](layer_output)
             layer_outputs.append(layer_output)
         aggregate = self.aggregate1x1(F.relu(layer_aggregate_input))
         output = self.output1x1(F.relu(aggregate))
