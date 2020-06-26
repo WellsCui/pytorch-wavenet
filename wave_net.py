@@ -4,6 +4,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributions as D
 import numpy as np
 from causal_conv1d import CausalConv1d
 from wave_net_layer import WaveNetLayer
@@ -11,31 +12,36 @@ from wave_net_utils import fill_voices_data_with_pads
 from typing import List, Tuple, Dict, Set, Union, Optional
 from multiprocessing import Process, Queue
 
+
+
 class WaveNet(nn.Module):
     """ Simple CNN Model:
         - 1D CNN
     """
 
-    def __init__(self, 
-        layers=20, 
-        block_size=10,
-        kernel_size=2,
-        layer_channels=16, 
-        skip_channels=32,
-        aggregate_channels=64,
-        classes=256,
-        conditional_features={
-            "enabled": False,
-            "channels": 0,
-            "upsamp_window": 0,
-            "upsamp_stride": 0,
-        }):
+    def __init__(self,
+                 layers=20,
+                 block_size=10,
+                 kernel_size=2,
+                 layer_channels=16,
+                 skip_channels=32,
+                 aggregate_channels=64,
+                 classes=65536,
+                 mixture_components=10,
+                 conditional_features={
+                     "enabled": False,
+                     "channels": 0,
+                     "upsamp_window": 0,
+                     "upsamp_stride": 0,
+                 }):
         """ Init CNN Model.
 
         @param layers (int): Number of layers
         @param context_size (int): Size of conditional context
         """
         super(WaveNet, self).__init__()
+        D.MixtureSameFamily
+        self.mixture = D.Categorical(torch.ones(5,))
 
         self.layers = layers
         self.block_size = block_size
@@ -44,16 +50,16 @@ class WaveNet(nn.Module):
         self.skip_channels = skip_channels
         self.conditional_features = conditional_features
         self.aggregate_channels = aggregate_channels
-        self.classes = classes
         self.layer_nets = torch.nn.ModuleList()
         self.skip_connections = torch.nn.ModuleList()
-        
         self.classes = classes
+        self.mixture_components = mixture_components
 
+        self.embedding = nn.Conv1d(1, self.layer_channels, 1)
         self.aggregate1x1 = nn.Conv1d(
             self.skip_channels, self.aggregate_channels, 1)
-        self.output1x1 = nn.Conv1d(self.aggregate_channels, self.classes, 1)
-        self.embedding = nn.Conv1d(1, self.layer_channels, 1)
+        self.output1x1 = nn.Conv1d(self.aggregate_channels, self.mixture_components*3, 1)
+        
 
         for layer_index in range(self.layers):
             dilation = 2 ** (layer_index % self.block_size)
@@ -76,7 +82,7 @@ class WaveNet(nn.Module):
         layer_input = self.embedding(input_tensor.unsqueeze(1))
         output, _ = self.layers_forward(layer_input, context)
         # masked_output = self.masks(output, lengths)
-        return F.log_softmax(output, 1)
+        return F.relu(output)
 
 
     def layers_forward(self, layer_input: torch.Tensor, context: torch.Tensor, padding=True) -> torch.Tensor:
@@ -169,9 +175,9 @@ class WaveNet(nn.Module):
         sample_queue.put(None, True)
         print("generation done!")
 
-
     @property
     def device(self) -> torch.device:
         """ Determine which device to place the Tensors upon, CPU or GPU.
         """
         return self.output1x1.weight.device
+    
