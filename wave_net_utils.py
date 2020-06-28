@@ -49,11 +49,11 @@ def quantize_voices(voices: np.array, u: int):
 
 def get_voices_labels(voices: np.array, label_count=256):
     Y = np.array(voices)/(65536/2)
-    Y = np.sign(Y)*np.log(1+label_count*np.abs(Y))/np.log(1+label_count)
+    mu=label_count-1
+    Y = np.sign(Y)*np.log(1+mu*np.abs(Y))/np.log(1+mu)
     step = 2 / label_count
     Y = Y // step + label_count // 2
     return Y.astype(int)
-
 
 def read_corpus_from_LJSpeech(file_path, source, line_num=-1):
     """ Read file, where each sentence is dilineated by a `\n`.
