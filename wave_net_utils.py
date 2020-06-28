@@ -120,9 +120,15 @@ def load_train_data(voice_path: str, data_size: int, epoch_size: int, data_queue
             if not os.path.isfile(voice_file):
                 continue
             _, samples = wavfile.read(voice_file, True)
-            clip_count = len(samples) // clip_size
-            clips = np.split(samples[:clip_count*clip_size], clip_count)
-            voices = voices+clips
+            if len(samples) < clip_size:
+                continue
+            start_index = np.random.randint(0, len(samples)-clip_size)
+            clip = samples[start_index:start_index+clip_size]
+
+            # clip_count = len(samples) // clip_size
+            # clips = np.split(samples[:clip_count*clip_size], clip_count)
+            clip_count = 1      
+            voices.append(clip)
             corpus.append(sent)
             epoch_count = epoch_count + clip_count
             data_count = data_count + clip_count
