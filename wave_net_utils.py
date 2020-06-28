@@ -49,11 +49,11 @@ def quantize_voices(voices: np.array, u: int):
 
 def get_voices_labels(voices: np.array, label_count=256):
     Y = np.array(voices)/(65536/2)
-    Y = np.sign(Y)*np.log(1+label_count*np.abs(Y))/np.log(1+label_count)
+    mu=label_count-1
+    Y = np.sign(Y)*np.log(1+mu*np.abs(Y))/np.log(1+mu)
     step = 2 / label_count
     Y = Y // step + label_count // 2
     return Y.astype(int)
-
 
 def read_corpus_from_LJSpeech(file_path, source, line_num=-1):
     """ Read file, where each sentence is dilineated by a `\n`.
@@ -120,9 +120,15 @@ def load_train_data(voice_path: str, data_size: int, epoch_size: int, data_queue
             if not os.path.isfile(voice_file):
                 continue
             _, samples = wavfile.read(voice_file, True)
-            clip_count = len(samples) // clip_size
-            clips = np.split(samples[:clip_count*clip_size], clip_count)
-            voices = voices+clips
+            if len(samples) < clip_size:
+                continue
+            start_index = np.random.randint(0, len(samples)-clip_size)
+            clip = samples[start_index:start_index+clip_size]
+
+            # clip_count = len(samples) // clip_size
+            # clips = np.split(samples[:clip_count*clip_size], clip_count)
+            clip_count = 1      
+            voices.append(clip)
             corpus.append(sent)
             epoch_count = epoch_count + clip_count
             data_count = data_count + clip_count

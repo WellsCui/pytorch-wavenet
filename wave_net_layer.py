@@ -20,17 +20,15 @@ class WaveNetLayer(nn.Module):
         # print("WaveNetLayer.dilation:", dilation)
         self.in_channels = in_channels
         self.output_channels = out_channels
-        self.filterConv1d = CausalConv1d(
-            out_channels, out_channels, kernel_size, stride=1, dilation=dilation)
-        self.gateConv1d = CausalConv1d(
-            out_channels, out_channels, kernel_size, stride=1, dilation=dilation)
-        # self.adjustConv1d = nn.Conv1d(out_channels, out_channels, 1)
+        self.layerConv1d = CausalConv1d(
+            in_channels, in_channels, kernel_size, stride=1, dilation=dilation)
+        
         self.context_size = context_size
-        if context_size > 0:
-            self.context_filter = CausalConv1d(
-            out_channels, out_channels, kernel_size, stride=1, dilation=dilation)
-            self.context_gate = CausalConv1d(
-            out_channels, out_channels, kernel_size, stride=1, dilation=dilation)
+        # if context_size > 0:
+        #     self.context_filter = CausalConv1d(
+        #     out_channels, out_channels, kernel_size, stride=1, dilation=dilation)
+        #     self.context_gate = CausalConv1d(
+        #     out_channels, out_channels, kernel_size, stride=1, dilation=dilation)
         
     
     def forward(self, X: torch.Tensor, context: torch.Tensor, padding=True) -> torch.Tensor:
@@ -45,14 +43,12 @@ class WaveNetLayer(nn.Module):
 
         @returns output (torch.Tensor): a variable/tensor of shape (B, N, output_channels)
         """
-        filtered = self.filterConv1d(X[:, :self.output_channels, :], padding)
-        gated = self.gateConv1d(X[:, self.output_channels:, :], padding)
+        output = self.layerConv1d(X, padding)
         
-        if self.context_size > 0:
-            filtered = filtered + self.context_filter(context, padding)
-            gated = gated + self.context_gate(context, padding)
+        # if self.context_size > 0:
+        #     filtered = filtered + self.context_filter(context, padding)
+        #     gated = gated + self.context_gate(context, padding)
         
-        output = torch.sigmoid(gated) * torch.tanh(filtered)
-        # output = self.adjustConv1d(output)
+        output = torch.sigmoid(output[:, :self.output_channels, :]) * torch.tanh(output[:, self.output_channels:, :])
         return output
     
