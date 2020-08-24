@@ -1,0 +1,32 @@
+{
+    "train_config": {
+        "device": "cpu",
+        "epoch_size": 2,
+        "max_epoch": 30,
+        "batch_size": 2,
+        "repeats": 1,
+        "decade_rate": 1,
+        "output_path": "./checkpoints",
+        "clip_grad": 5.0,
+        "log_every": 1,
+        "valid_every": 5
+    },
+    "data_config": {
+        "waves_path": "../datasets/LJSpeech/wavs",
+        "train_file": "data/train.csv",
+        "dev_file": "data/dev.csv",
+        "sampling_rate": 22050,
+        "n_mels": 256,
+        "mel_fmax": 8000.0
+    },
+    "model_config": {
+        "layers":30, 
+        "block_size":10,
+        "kernel_size":3,
+        "residual_channels":256,
+        "layer_channels":256, 
+        "skip_channels":256,
+        "aggregate_channels":256,
+        "classes":40
+    }
+}

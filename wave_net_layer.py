@@ -10,7 +10,7 @@ from causal_conv1d import CausalConv1d
 
 
 class WaveNetLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, dilation, context_size=0):
+    def __init__(self, in_channels, kernel_size, dilation):
         """ Init CNN Model.
 
         @param embed_size (int): Word Embedding size 
@@ -19,17 +19,10 @@ class WaveNetLayer(nn.Module):
         self.dilation = dilation
         # print("WaveNetLayer.dilation:", dilation)
         self.in_channels = in_channels
-        self.output_channels = out_channels
+        self.output_channels = in_channels
         self.layerConv1d = CausalConv1d(
-            in_channels, in_channels, kernel_size, stride=1, dilation=dilation)
-        
-        self.context_size = context_size
-        # if context_size > 0:
-        #     self.context_filter = CausalConv1d(
-        #     out_channels, out_channels, kernel_size, stride=1, dilation=dilation)
-        #     self.context_gate = CausalConv1d(
-        #     out_channels, out_channels, kernel_size, stride=1, dilation=dilation)
-        
+            in_channels, in_channels*2, kernel_size, stride=1, dilation=dilation)
+       
     
     def forward(self, X: torch.Tensor, context: torch.Tensor, padding=True) -> torch.Tensor:
         """ Take a tensor with shape (B, C, N)
